@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import uuid
+import copy
 from subprocess import Popen
 
 from story.utils import *
@@ -155,18 +156,20 @@ class StoryManager:
                 return base64.urlsafe_b64decode(story_encrypted[:44])
         return None
 
-    def load_from_storage(self, story_id):
+    def load_from_storage(self, story_id, decrypt=True):
         if not os.path.exists(save_path):
             return None
 
-        file_name = "story" + story_id + (".json" if self.encryptor is None else ".bin")
+        decrypt = decrypt and self.encryptor is not None
+
+        file_name = "story" + story_id + (".bin" if decrypt else ".json")
         if self.cloud:
             cmd = "gsutil cp gs://aidungeonstories/" + file_name + " " + save_path
             os.system(cmd)
 
         exists = os.path.isfile(os.path.join(save_path, file_name))
         if exists:
-            if self.encryptor is not None:
+            if decrypt:
                 with open(os.path.join(save_path, file_name), "rb") as fp:
                     story_encrypted = fp.read()
                     try:
@@ -185,6 +188,7 @@ class StoryManager:
                     if self.generator.model_name != game["model"]:
                         console_print("Warning: Save was generated using the model " + game["model"] + "; load this save in a new session to use this model.")
                 else:
+                    console_print("Generating model (This might take a few minutes)")
                     try:
                         self.generator = GPT2Generator(model_name=game["model"])
                     except:
@@ -206,10 +210,19 @@ class StoryManager:
         else:
             return None
 
-    def save_story(self):
-        story_id = str(uuid.uuid1())
-        self.story.uuid = story_id
-        story_dict = self.story.to_dict()
+    def save_story(self, name=None, overwrite=True):
+        if self.story.uuid is None:
+            self.story.uuid = str(uuid.uuid1())
+
+        if name:
+            story_id = name
+            overwrite = False
+        else:
+            story_id = self.story.uuid if overwrite else str(uuid.uuid1())
+
+        saved_story = self.story if overwrite else copy.copy(self.story)
+        saved_story.uuid = story_id
+        story_dict = saved_story.to_dict()
         story_dict["top_p"] = self.generator.top_p
         story_dict["temp"] = self.generator.temp
         story_dict["raw"] = self.generator.raw
@@ -278,128 +291,15 @@ class UnconstrainedStoryManager(StoryManager):
         result = self.generate_result(action_choice)
         self.story.add_to_story(action_choice, result)
         return result
-        
+
     def act_with_timeout(self, action_choice):
         return func_timeout(self.inference_timeout, self.act, (action_choice,))
 
     def generate_result(self, action):
         block = self.generator.generate(self.story_context() + action)
         return block
-        
+
     def set_context(self, context):
         self.story.context = context
     def get_context(self):
-        return self.story.context       
-
-
-class ConstrainedStoryManager(StoryManager):
-    def __init__(self, generator, action_verbs_key="classic"):
-        super().__init__(generator)
-        self.action_phrases = get_action_verbs(action_verbs_key)
-        self.cache = False
-        self.cacher = None
-        self.seed = None
-
-    def enable_caching(
-        self, credentials_file=None, seed=0, bucket_name="dungeon-cache"
-    ):
-        self.cache = True
-        self.cacher = Cacher(credentials_file, bucket_name)
-        self.seed = seed
-
-    def start_new_story(self, story_prompt, context="", game_state=None):
-        if self.cache:
-            return self.start_new_story_cache(story_prompt, game_state=game_state)
-        else:
-            return super().start_new_story(
-                story_prompt, context=context, game_state=game_state
-            )
-
-    def start_new_story_generate(self, story_prompt, game_state=None):
-        super().start_new_story(story_prompt, game_state=game_state)
-        self.story.possible_action_results = self.get_action_results()
-        return self.story.story_start
-
-    def start_new_story_cache(self, story_prompt, game_state=None):
-
-        response = self.cacher.retrieve_from_cache(self.seed, [], "story")
-        if response is not None:
-            story_start = story_prompt + response
-            self.story = Story(story_start, seed=self.seed)
-            self.story.possible_action_results = self.get_action_results()
-        else:
-            story_start = self.start_new_story_generate(
-                story_prompt, game_state=game_state
-            )
-            self.story.seed = self.seed
-            self.cacher.cache_file(self.seed, [], story_start, "story")
-
-        return story_start
-
-    def load_story(self, story, from_json=False):
-        story_string = super().load_story(story, from_json=from_json)
-        return story_string
-
-    def get_possible_actions(self):
-        if self.story.possible_action_results is None:
-            self.story.possible_action_results = self.get_action_results()
-
-        return [
-            action_result[0] for action_result in self.story.possible_action_results
-        ]
-
-    def act(self, action_choice_str):
-
-        try:
-            action_choice = int(action_choice_str)
-        except:
-            print("Error invalid choice.")
-            return None, None
-
-        if action_choice < 0 or action_choice >= len(self.action_phrases):
-            print("Error invalid choice.")
-            return None, None
-
-        self.story.choices.append(action_choice)
-        action, result = self.story.possible_action_results[action_choice]
-        self.story.add_to_story(action, result)
-        self.story.possible_action_results = self.get_action_results()
-        return result, self.get_possible_actions()
-
-    def get_action_results(self):
-        if self.cache:
-            return self.get_action_results_cache()
-        else:
-            return self.get_action_results_generate()
-
-    def get_action_results_generate(self):
-        action_results = [
-            self.generate_action_result(self.story_context(), phrase)
-            for phrase in self.action_phrases
-        ]
-        return action_results
-
-    def get_action_results_cache(self):
-        response = self.cacher.retrieve_from_cache(
-            self.story.seed, self.story.choices, "choices"
-        )
-
-        if response is not None:
-            print("Retrieved from cache")
-            return json.loads(response)
-        else:
-            print("Didn't receive from cache")
-            action_results = self.get_action_results_generate()
-            response = json.dumps(action_results)
-            self.cacher.cache_file(
-                self.story.seed, self.story.choices, response, "choices"
-            )
-            return action_results
-
-    def generate_action_result(self, prompt, phrase, options=None):
-
-        action_result = (
-            phrase + " " + self.generator.generate(prompt + " " + phrase, options)
-        )
-        action, result = split_first_sentence(action_result)
-        return action, result
+        return self.story.context

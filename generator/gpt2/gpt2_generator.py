@@ -42,14 +42,14 @@ class GPT2Generator:
         self.saver = tf.train.Saver()
         ckpt = tf.train.latest_checkpoint(os.path.join(self.model_dir, self.model_name))
         self.saver.restore(self.sess, ckpt)
-        
+
     def prompt_replace(self, prompt):
         # print("\n\nBEFORE PROMPT_REPLACE:")
         # print(repr(prompt))
         prompt = prompt.replace("#", "")
         prompt = prompt.replace("*", "")
         prompt = prompt.replace("\n\n", "\n")
-        prompt = re.sub("(?<=\w)\.\.(?:\s|$)", ".", prompt)
+        prompt = re.sub(r"(?<=\w)\.\.(?:\s|$)", ".", prompt)
         prompt = prompt.rstrip(" ")
         # prompt = second_to_first_person(prompt)
 
@@ -60,26 +60,21 @@ class GPT2Generator:
     def result_replace(self, result, actions):
         # print("\n\nBEFORE RESULT_REPLACE:")
         # print(repr(result))
-        
+
         result = result.replace('."', '".')
         result = result.replace("#", "")
         result = result.replace("*", "")
         result = result.replace("\n\n", "\n")
-        result = re.sub("(?<=\w)\.\.(?:\s|$)", ".", result)
+        result = re.sub(r"(?<=\w)\.\.(?:\s|$)", ".", result)
         # result = first_to_second_person(result)
         result = cut_trailing_sentence(result, self.raw)
         for sentence in actions:
             result = result.replace(sentence.strip()+" ", "")
         if len(result) == 0:
             return ""
-        first_letter_capitalized = result[0].isupper()
         if self.censor:
             result = remove_profanity(result)
 
-        if not first_letter_capitalized:
-            result = result[0].lower() + result[1:]
-
-        #
         # print("\n\nAFTER RESULT_REPLACE:")
         # print(repr(result))
 
@@ -126,12 +121,23 @@ class GPT2Generator:
             return self.generate(prompt, depth=depth+1)
 
         return result
-        
+
     def cut_down_prompt(self, prompt):
-        split_prompt = prompt.split(">")
-        expendable_text = ">".join(split_prompt[2:])
-        return split_prompt[0] + (">" + expendable_text if len(expendable_text) > 0 else "")
-        
+        if not self.raw:
+            split_prompt = prompt.split(">")
+            expendable_text = ">".join(split_prompt[2:])
+            return split_prompt[0] + (">" + expendable_text if len(expendable_text) > 0 else "")
+        else:
+            sentences = string_to_sentence_list(prompt.lstrip())
+            sentences = sentences[1:]
+            new_text = ""
+            for i in range(len(sentences)):
+                if sentences[i] == "<break>":
+                    new_text = new_text + "\n"
+                else:
+                    new_text = new_text + " " + sentences[i]
+            return new_text.lstrip()
+
     def gen_output(self):
         models_dir = os.path.expanduser(os.path.expandvars(self.model_dir))
         hparams = model.default_hparams()
@@ -147,12 +153,12 @@ class GPT2Generator:
             #top_k=self.top_k,
             top_p=self.top_p,
         )
-        
+
     def change_temp(self, t):
         changed = t != self.temp
         self.temp = t
         return changed
-        
+
     def change_top_p(self, t):
         changed = t != self.top_p
         self.top_p = t
