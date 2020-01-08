@@ -178,6 +178,8 @@ def instructions():
     text += '\n                    action.'
     text += '\n  "/retry"          Reverts the last action and tries again with the same action.'
     text += '\n  "/alter"          Edit the most recent AI response'
+    text += '\n  "/altergen"       Edit the beginning of the most recent response and have the'
+    text += '\n                    AI generate the rest'
     text += '\n  "/quit"           Quits the game and saves'
     text += '\n  "/reset"          Starts a new game and saves your current one'
     text += '\n  "/restart"        Starts the game from beginning with same settings'
@@ -439,7 +441,7 @@ def play_aidungeon_2():
                     if len(args) == 0:
                         load_ID = input("What is the ID of the saved game? (prefix with gs:// if it is a cloud save) ")
                     else:
-                        load_ID = args[0]
+                        load_ID = " ".join(args).strip()
                     console_print("\nLoading Game...\n")
                     if load_ID.startswith("gs://"):
                         story_manager.cloud = True
@@ -468,11 +470,15 @@ def play_aidungeon_2():
                             name = None
                             overwrite = (choice == 1)
                         else:
-                            name = args[0]
+                            name = " ".join(args).strip()
                             overwrite = False
-                        save_id = story_manager.save_story(name, overwrite)
-                        console_print("Game saved.")
-                        console_print(f"To load the game, type 'load' and enter the following ID: {save_id}")
+                        try:
+                            save_id = story_manager.save_story(name, overwrite)
+                            console_print("Game saved.")
+                            console_print(f"To load the game, type 'load' and enter the following ID: {save_id}")
+                        except Exception as e:
+                            print(f"The following error occurred: {e}")
+                            print("Game not saved.")
                     else:
                         console_print("Saving has been turned off. Cannot save.")
 
@@ -564,29 +570,29 @@ def play_aidungeon_2():
                         console_print("You make sure to remember {}.".format(" ".join(action.split(" ")[1:])))
 
                 elif command == 'retry':
-
-                    if len(story_manager.story.actions) is 0:
-                        console_print("There is nothing to retry.")
-                        continue
-
-                    last_action = story_manager.story.actions.pop()
-                    last_result = story_manager.story.results.pop()
-
-                    try:
+                    if len(story_manager.story.actions) > 0:
+                        last_action = story_manager.story.actions.pop()
+                        last_result = story_manager.story.results.pop()
                         try:
                             story_manager.act_with_timeout(last_action)
                             console_print(last_action)
                             console_print(story_manager.story.results[-1])
                         except FunctionTimedOut:
                             console_print("That input caused the model to hang (timeout is {}, use infto ## command to change)".format(story_manager.inference_timeout))
+                        except NameError:
+                            pass
+                        finally:
                             if ping:
                                 playsound('ping.mp3')
-                    except NameError:
-                        pass
-                    if ping:
-                        playsound('ping.mp3')
-
-                    continue
+                    else:
+                        # Retry for another story start
+                        block = story_manager.generator.generate(story_manager.story.context + story_manager.story.story_prompt)
+                        block = cut_trailing_sentence(block)
+                        story_manager.start_new_story(
+                            story_prompt=story_manager.story.story_prompt, context=context, upload_story=upload_story
+                        )
+                        print("\n")
+                        console_print(str(story_manager.story))
 
                 elif command == 'context':
                     try:
@@ -605,19 +611,45 @@ def play_aidungeon_2():
                 elif command == 'alter':
                     try:
                         console_print("\nThe AI thinks this was what happened:\n")
-                        try:
-                            current_result = story_manager.story.results[-1]
-                        except IndexError:
-                            current_result = story_manager.story.story_start
+                        current_result = (
+                            story_manager.story.results[-1] if len(story_manager.story.results) > 0
+                            else story_manager.story.story_start
+                        )
                         new_result = string_edit(current_result)
-                        if new_result is None:
-                            pass
-                        else:
-                            try:
+                        if new_result is not None:
+                            if len(story_manager.story.results) > 0:
                                 story_manager.story.results[-1] = new_result
-                            except IndexError:
+                            else:
                                 story_manager.story.story_start = new_result
                             console_print("Result updated.\n")
+                    except:
+                        console_print("Something went wrong, cancelling.")
+                        pass
+
+                elif command == 'altergen':
+                    try:
+                        if len(story_manager.story.actions) > 0:
+                            # temporarily remove the latest action/result pair
+                            last_action = story_manager.story.actions.pop()
+                            last_result = story_manager.story.results.pop()
+
+                            console_print("\nThe AI thinks this was what happened:\n")
+                            print(last_result)
+
+                            new_result = input("\nEnter the first part of new text (use \\n for new line):\n")
+                            new_result = new_result.replace("\\n", "\n")
+                            try:
+                                new_result += story_manager.generate_with_timeout(last_action + new_result)
+                                story_manager.story.add_to_story(last_action, new_result)
+                                console_print(last_action)
+                                console_print(new_result)
+                            except FunctionTimedOut:
+                                console_print("That input caused the model to hang (timeout is {}, use infto ## command to change)".format(story_manager.inference_timeout))
+                            finally:
+                                if ping:
+                                    playsound('ping.mp3')
+                        else:
+                            console_print("There's no result to alter.\n")
                     except:
                         console_print("Something went wrong, cancelling.")
                         pass
